@@ -108,8 +108,6 @@ const calcMasaOsea = (peso, sexo) => peso * (sexo === "Hombre" ? 0.15 : 0.12);
 
 const calcMasaResidual = (peso, sexo) => peso * (sexo === "Hombre" ? 0.241 : 0.209);
 
-const calcMasaResidual = (peso, sexo) => peso * (sexo === "Hombre" ? 0.241 : 0.209);
-
 function calcComposicion({ peso, talla, edad, sexo, pliegues, perimetros }) {
   const grasaR = calcGrasaJP7(pliegues, edad, sexo);
   const mmR = calcMasaMuscular(talla, edad, sexo, pliegues, perimetros);
