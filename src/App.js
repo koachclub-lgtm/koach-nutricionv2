@@ -13,7 +13,7 @@ function toDB(c) {
     actividad: c.actividad, objetivo: c.objetivo, programa: c.programa, alergias: c.alergias,
     no_gusta: c.noGusta, preferencias: c.preferencias, comidas_dia: c.comidasDia,
     habitos_fijos: c.habitosFijos, control_porciones: c.controlPorciones, suplementos: c.suplementos,
-    contexto: c.contexto, pliegues: c.pliegues, perimetros: c.perimetros,
+    contexto: c.contexto, pliegues: c.pliegues, perimetros: c.perimetros, diametros: c.diametros,
     evaluaciones: c.evaluaciones, pautas: c.pautas, seguimientos: c.seguimientos,
     updated_at: new Date().toISOString(),
   };
@@ -24,7 +24,7 @@ function fromDB(r) {
     actividad: r.actividad, objetivo: r.objetivo, programa: r.programa, alergias: r.alergias,
     noGusta: r.no_gusta, preferencias: r.preferencias, comidasDia: r.comidas_dia,
     habitosFijos: r.habitos_fijos, controlPorciones: r.control_porciones, suplementos: r.suplementos,
-    contexto: r.contexto, pliegues: r.pliegues || {}, perimetros: r.perimetros || {},
+    contexto: r.contexto, pliegues: r.pliegues || {}, perimetros: r.perimetros || {}, diametros: r.diametros || {},
     evaluaciones: r.evaluaciones || [], pautas: r.pautas || [], seguimientos: r.seguimientos || [],
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
@@ -66,21 +66,43 @@ const css = `
 `;
 
 // ── FÓRMULAS — MOTOR VALIDADO v2.0 ────────────────────────────
-// ── % GRASA CORPORAL — Jackson & Pollock 1978/1980 + Siri 1961 ──
-// VERIFICADO contra fuente original (PubMed, ScienceDirect, ResearchGate).
-// Requiere 7 sitios específicos: pecho, axilar media, tríceps,
-// subescapular, abdominal, cresta ilíaca (suprailiaca), muslo anterior.
-const JP7_SITIOS = ["pecho","axilarMedia","triceps","subescapular","abdominal","crestaIliaca","musloAnterior"];
+// ── % GRASA CORPORAL — Durnin & Womersley 1974 + Siri 1961 ──
+// Protocolo ISAK: requiere 4 sitios — bíceps, tríceps, subescapular,
+// cresta ilíaca (suprailiaca). Coeficientes específicos por sexo y
+// tramo de edad (Durnin & Womersley, Br J Nutr 1974).
+const DW4_SITIOS = ["biceps","triceps","subescapular","crestaIliaca"];
 
-function calcGrasaJP7(pliegues, edad, sexo) {
-  const faltan = JP7_SITIOS.filter(k => !(Number(pliegues[k]) > 0));
+function coefsDW(edad, sexo) {
+  const tablas = sexo === "Hombre"
+    ? [[20,1.1620,0.0630],[30,1.1631,0.0632],[40,1.1422,0.0544],[50,1.1620,0.0700],[Infinity,1.1715,0.0779]]
+    : [[20,1.1549,0.0678],[30,1.1599,0.0717],[40,1.1423,0.0632],[50,1.1333,0.0612],[Infinity,1.1339,0.0645]];
+  const fila = tablas.find(([max]) => edad < max) || tablas[tablas.length-1];
+  return { C: fila[1], M: fila[2] };
+}
+
+// ── SUMATORIA DE PLIEGUES — 6 y 8 sitios (Yuhasz/Carter, ISAK) ──
+// 6 pliegues: tríceps, subescapular, supraespinal, abdominal, muslo, pierna.
+// 8 pliegues: los 6 anteriores + bíceps + cresta ilíaca.
+const SUMA6_SITIOS = ["triceps","subescapular","supraespinal","abdominal","musloAnterior","pantorrillaMedial"];
+const SUMA8_SITIOS = [...SUMA6_SITIOS, "biceps", "crestaIliaca"];
+
+function calcSumaPliegues(pliegues) {
+  const suma = (sitios) => {
+    const completos = sitios.every(k => Number(pliegues[k]) > 0);
+    if (!completos) return null;
+    return sitios.reduce((s,k) => s + Number(pliegues[k]), 0);
+  };
+  return { sum6: suma(SUMA6_SITIOS), sum8: suma(SUMA8_SITIOS) };
+}
+
+function calcGrasaDW4(pliegues, edad, sexo) {
+  const faltan = DW4_SITIOS.filter(k => !(Number(pliegues[k]) > 0));
   if (faltan.length) return { valor: null, faltan };
-  const sum7 = JP7_SITIOS.reduce((s,k) => s + Number(pliegues[k]), 0);
-  const BD = sexo === "Hombre"
-    ? 1.112 - (0.00043499*sum7) + (0.00000055*sum7*sum7) - (0.00028826*edad)
-    : 1.097 - (0.00046971*sum7) + (0.00000056*sum7*sum7) - (0.00012828*edad);
+  const sum4 = DW4_SITIOS.reduce((s,k) => s + Number(pliegues[k]), 0);
+  const { C, M } = coefsDW(Number(edad) || 25, sexo);
+  const BD = C - M * Math.log10(sum4);
   const pct = (495 / BD) - 450; // Siri 1961
-  return { valor: Math.max(3, Math.min(60, pct)), sum7, BD };
+  return { valor: Math.max(3, Math.min(60, pct)), sum4, BD };
 }
 
 function calcMasaMuscular(talla_cm, edad, sexo, pliegues, perimetros) {
@@ -109,7 +131,7 @@ const calcMasaOsea = (peso, sexo) => peso * (sexo === "Hombre" ? 0.15 : 0.12);
 const calcMasaResidual = (peso, sexo) => peso * (sexo === "Hombre" ? 0.241 : 0.209);
 
 function calcComposicion({ peso, talla, edad, sexo, pliegues, perimetros }) {
-  const grasaR = calcGrasaJP7(pliegues, edad, sexo);
+  const grasaR = calcGrasaDW4(pliegues, edad, sexo);
   const mmR = calcMasaMuscular(talla, edad, sexo, pliegues, perimetros);
   const avisos = [];
 
@@ -142,8 +164,9 @@ function calcComposicion({ peso, talla, edad, sexo, pliegues, perimetros }) {
     : null;
 
   const segmentos = mmR.valor !== null ? { brazo: mmR.CAB, muslo: mmR.CAM, pantorrilla: mmR.CAP } : null;
+  const sumaPliegues = calcSumaPliegues(pliegues);
 
-  return { masas, porcentajes, pesoReal: peso, calidadNota, avisos, segmentos, datosCompletos: grasaR.valor !== null && mmR.valor !== null };
+  return { masas, porcentajes, pesoReal: peso, calidadNota, avisos, segmentos, sumaPliegues, datosCompletos: grasaR.valor !== null && mmR.valor !== null };
 }
 
 function calcularIndices({ peso, talla, perimetros, sexo }) {
@@ -545,7 +568,7 @@ function buildInformePDF({ cliente, comp, indices, edadBio, tdee, macros, progra
   ink(); doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
   const introTxt = doc.splitTextToSize(
     "Este informe presenta tus mediciones, tu composición corporal medida con métodos " +
-    "verificados (Jackson-Pollock + Siri para % grasa, Lee 2000 para masa muscular, FFMI " +
+    "verificados (Durnin & Womersley para % grasa, Lee 2000 para masa muscular, FFMI " +
     "de Kouri para masa magra relativa), tu edad biológica, y el protocolo nutricional " +
     "diseñado específicamente para tu evaluación.", 170);
   doc.text(introTxt, 20, 178);
@@ -560,7 +583,7 @@ function buildInformePDF({ cliente, comp, indices, edadBio, tdee, macros, progra
   // PÁGINA 2 — COMPOSICIÓN CORPORAL
   // ══════════════════════════════════════════════════════════
   doc.addPage();
-  header("01", "Composición", "Jackson-Pollock 1978/1980 + Siri 1961 (grasa) · Lee 2000 (músculo)");
+  header("01", "Composición", "Durnin & Womersley 1974 + Siri 1961 (grasa) · Lee 2000 (músculo)");
 
   let y = 58;
   const shades = { grasa: INK, muscular: [55,55,55], osea: [110,108,103], residual: [168,166,160] };
@@ -603,16 +626,16 @@ function buildInformePDF({ cliente, comp, indices, edadBio, tdee, macros, progra
 
   const SECTORES = {
     "TREN SUPERIOR": {
-      pliegues: [["Pecho","pecho",true],["Axilar media","axilarMedia",true],["Tríceps","triceps",true],["Bíceps","biceps",false],["Subescapular","subescapular",true]],
-      perimetros: [["Brazo relajado","brazo"],["Brazo flexionado","brazoFlex"]],
+      pliegues: [["Bíceps","biceps",true],["Tríceps","triceps",true],["Subescapular","subescapular",true]],
+      perimetros: [["Brazo relajado","brazo"],["Brazo flex. y cont.","brazoFlex"]],
     },
     "CORE": {
-      pliegues: [["Abdominal","abdominal",true],["Cresta ilíaca","crestaIliaca",true],["Supraespinal","supraespinal",false]],
+      pliegues: [["Cresta ilíaca","crestaIliaca",true],["Supraespinal","supraespinal",false],["Abdominal","abdominal",false]],
       perimetros: [["Cintura","cintura"],["Cadera","cadera"]],
     },
     "TREN INFERIOR": {
-      pliegues: [["Muslo anterior","musloAnterior",true],["Pantorrilla medial","pantorrillaMedial",false]],
-      perimetros: [["Muslo","muslo"],["Pantorrilla","pantorrilla"]],
+      pliegues: [["Muslo","musloAnterior",false],["Pierna","pantorrillaMedial",false]],
+      perimetros: [["Muslo medio","muslo"],["Pierna","pantorrilla"]],
     },
   };
 
@@ -639,7 +662,7 @@ function buildInformePDF({ cliente, comp, indices, edadBio, tdee, macros, progra
   y = 56;
   doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); gray();
   dot(21, y - 1.5, 0.85);
-  doc.text(" usado en el cálculo de % grasa real (Jackson-Pollock 7 sitios)", 24, y);
+  doc.text(" usado en el cálculo de % grasa real (Durnin & Womersley, perfil ISAK)", 24, y);
   y += 9;
 
   Object.entries(SECTORES).forEach(([nombre, def]) => {
@@ -743,7 +766,17 @@ function buildInformePDF({ cliente, comp, indices, edadBio, tdee, macros, progra
     doc.setFont("helvetica", "normal"); doc.setFontSize(6.5); doc.text(it.c || "", x + 30, y + 19);
   });
 
-  y += 38;
+  if (comp?.sumaPliegues && (comp.sumaPliegues.sum6 !== null || comp.sumaPliegues.sum8 !== null)) {
+    y += 30;
+    rectFill(20, y, 170, 20, GRAYXLT, 3);
+    ink(); doc.setFont("helvetica", "bold"); doc.setFontSize(7.5);
+    doc.text("SUMATORIA DE PLIEGUES", 27, y + 8);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7);
+    doc.text(`6 pliegues: ${comp.sumaPliegues.sum6 !== null ? comp.sumaPliegues.sum6.toFixed(1)+"mm" : "—"}    8 pliegues: ${comp.sumaPliegues.sum8 !== null ? comp.sumaPliegues.sum8.toFixed(1)+"mm" : "—"}`, 27, y + 15);
+    y += 28;
+  } else {
+    y += 38;
+  }
   lineH(20, y, 190, 0.3, GRAYLT); y += 11;
   ink(); doc.setFont("helvetica", "bold"); doc.setFontSize(13);
   doc.text("EDAD BIOLÓGICA", 20, y); y += 16;
@@ -965,8 +998,9 @@ function buildInformePDF({ cliente, comp, indices, edadBio, tdee, macros, progra
 const EMPTY = {
 
   nombre: "", edad: "", sexo: "", peso: "", talla: "", actividad: "", anosEntrenamiento: "",
-  pliegues: { triceps:"", biceps:"", subescapular:"", crestaIliaca:"", supraespinal:"", abdominal:"", musloAnterior:"", pantorrillaMedial:"", pecho:"", axilarMedia:"" },
+  pliegues: { triceps:"", biceps:"", subescapular:"", crestaIliaca:"", supraespinal:"", abdominal:"", musloAnterior:"", pantorrillaMedial:"" },
   perimetros: { brazo:"", brazoFlex:"", cintura:"", cadera:"", muslo:"", pantorrilla:"" },
+  diametros: { humero:"", femur:"" },
   objetivo:"", programa:"", alergias:"", noGusta:"", preferencias:"",
   comidasDia:"", habitosFijos:"", controlPorciones:"", suplementos:"", contexto:"",
   evaluaciones: [], pautas: [], seguimientos: [],
@@ -1060,7 +1094,7 @@ ICC: ${idx?.icc||"—"} (${idx?.iccRisk?"riesgo":"normal"}) | ICT: ${idx?.ict||"
 FFMI: ${ev?.ffmi?.toFixed(1)||"—"} (${ev?.catFFMI||"—"}) | Forma corporal: ${ev?.forma?.label||"—"}
 Edad biológica: ${edadBio?.edadBio||"—"} años (${edadBio?.estado||"—"})
 
-COMPOSICIÓN CORPORAL (Jackson-Pollock 1978/1980 + Siri 1961 / Lee 2000):
+COMPOSICIÓN CORPORAL (Durnin & Womersley 1974 + Siri 1961 / Lee 2000):
 % Grasa real: ${comp?.porcentajes?.grasa||"—"}% (${comp?.masas?.grasa?.toFixed(2)||"—"}kg) — clasificación: ${ev?.catGrasa||"—"}
 Masa Muscular: ${comp?.masas?.muscular?.toFixed(2)||"—"}kg (${comp?.porcentajes?.muscular||"—"}%)
 Masa Ósea (referencial): ${comp?.masas?.osea?.toFixed(2)||"—"}kg (${comp?.porcentajes?.osea||"—"}%)
@@ -1103,7 +1137,7 @@ Tono profesional, directo. Incluye gramaje exacto en todo.`;
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 3000, messages: [{ role: "user", content: prompt }] }),
+        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 3000, messages: [{ role: "user", content: prompt }] }),
       });
       if (!res.ok) { const e = await res.text(); setPauta(`ERROR_HTTP_${res.status}:\n${e}`); setGen(false); return; }
       const data = await res.json();
@@ -1234,11 +1268,11 @@ Tono profesional, directo. Incluye gramaje exacto en todo.`;
     const stepLabels = ["DATOS BÁSICOS", "MEDICIÓN ISAK", "INTAKE", "PROTOCOLO"];
     const stepDesc = ["Identidad, antropometría y actividad", "Pliegues cutáneos y perímetros", "Preferencias y hábitos alimentarios", "Selección de programa nutricional"];
     return (
-      <div className="fade" style={{ maxWidth: 1180, margin: "0 auto", minHeight: "100vh", background: C.bg, display: "flex" }}>
+      <div className="fade" style={{ maxWidth: 1180, margin: "0 auto", height: "100vh", background: C.bg, display: "flex", overflow: "hidden" }}>
         <style>{css}</style>
 
         {/* SIDEBAR DE PASOS */}
-        <div style={{ width: 260, flexShrink: 0, borderRight: `1.5px solid ${C.ink}`, minHeight: "100vh", padding: "22px 0", display: "flex", flexDirection: "column" }}>
+        <div style={{ width: 260, flexShrink: 0, borderRight: `1.5px solid ${C.ink}`, height: "100%", overflowY: "auto", padding: "22px 0", display: "flex", flexDirection: "column" }}>
           <div style={{ padding: "0 22px 18px" }}>
             <BackBtn to="home" />
           </div>
@@ -1315,30 +1349,35 @@ Tono profesional, directo. Incluye gramaje exacto en todo.`;
             {step === 2 && (
               <div className="fade" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.1fr 0.9fr", gap: 28 }}>
                 <div>
-                  <Divider label="JACKSON-POLLOCK · % GRASA (mm)" />
-                  <div style={{ fontSize: 8, color: C.gray, marginBottom: 8, lineHeight: 1.6 }}>Estos 7 campos son obligatorios para calcular el % de grasa real.</div>
-                  {[["pecho","Pecho"],["axilarMedia","Axilar media"],["triceps","Tríceps"],["subescapular","Subescapular"],["crestaIliaca","Cresta ilíaca"],["abdominal","Abdominal"],["musloAnterior","Muslo anterior"]].map(([k,l]) => (
+                  <Divider label="PLIEGUES ISAK · % GRASA (mm)" />
+                  <div style={{ fontSize: 8, color: C.gray, marginBottom: 8, lineHeight: 1.6 }}>Perfil restringido ISAK — 8 sitios. Bíceps, tríceps, subescapular y cresta ilíaca son obligatorios para calcular el % de grasa real (Durnin & Womersley).</div>
+                  {[["biceps","Bíceps"],["triceps","Tríceps"],["subescapular","Subescapular"],["crestaIliaca","Cresta ilíaca"]].map(([k,l]) => (
                     <Field key={k} label={l} value={form.pliegues[k]} onChange={setN("pliegues",k)} type="number" placeholder="—" />
                   ))}
                 </div>
                 <div>
-                  <Divider label="PLIEGUES ADICIONALES (mm)" />
-                  <div style={{ fontSize: 8, color: C.gray, marginBottom: 8, lineHeight: 1.6 }}>Usados para masa muscular y registro ISAK completo.</div>
-                  {[["biceps","Bíceps"],["supraespinal","Supraespinal"],["pantorrillaMedial","Pantorrilla medial"]].map(([k,l]) => (
+                  <Divider label="PLIEGUES ISAK · COMPLEMENTARIOS (mm)" />
+                  <div style={{ fontSize: 8, color: C.gray, marginBottom: 8, lineHeight: 1.6 }}>Usados para masa muscular (Lee 2000) y registro ISAK completo.</div>
+                  {[["supraespinal","Supraespinal"],["abdominal","Abdominal"],["musloAnterior","Muslo"],["pantorrillaMedial","Pierna"]].map(([k,l]) => (
                     <Field key={k} label={l} value={form.pliegues[k]} onChange={setN("pliegues",k)} type="number" placeholder="—" />
+                  ))}
+                  <Divider label="DIÁMETROS ÓSEOS (cm)" />
+                  <div style={{ fontSize: 8, color: C.gray, marginBottom: 8, lineHeight: 1.6 }}>Referenciales ISAK. Aún no incorporados a ningún cálculo automático.</div>
+                  {[["humero","Húmero"],["femur","Fémur"]].map(([k,l]) => (
+                    <Field key={k} label={l} value={form.diametros[k]} onChange={setN("diametros",k)} type="number" placeholder="—" />
+                  ))}
+                </div>
+                <div>
+                  <Divider label="PERÍMETROS (cm)" />
+                  <div style={{ fontSize: 8, color: C.gray, marginBottom: 8, lineHeight: 1.6 }}>Brazo, muslo y pierna son obligatorios para masa muscular.</div>
+                  {[["brazo","Brazo relajado"],["brazoFlex","Brazo flex. y cont."],["cintura","Cintura"],["cadera","Cadera"],["muslo","Muslo medio"],["pantorrilla","Pierna"]].map(([k,l]) => (
+                    <Field key={k} label={l} value={form.perimetros[k]} onChange={setN("perimetros",k)} type="number" placeholder="—" />
                   ))}
                   <Divider label="DATOS YA INGRESADOS" />
                   <div style={{ background: C.card, border: `1px solid ${C.grayLt}`, borderRadius: 8, padding: "12px 14px", fontSize: 9, color: C.gray, lineHeight: 1.8 }}>
                     {form.nombre || "—"} · {form.peso||"—"}kg · {form.talla||"—"}cm<br/>
                     {ACTIVIDAD_LABELS[form.actividad] || "Sin actividad"}
                   </div>
-                </div>
-                <div>
-                  <Divider label="PERÍMETROS (cm)" />
-                  <div style={{ fontSize: 8, color: C.gray, marginBottom: 8, lineHeight: 1.6 }}>Brazo, muslo y pantorrilla son obligatorios para masa muscular.</div>
-                  {[["brazo","Brazo relajado"],["brazoFlex","Brazo flexionado"],["cintura","Cintura"],["cadera","Cadera"],["muslo","Muslo"],["pantorrilla","Pantorrilla"]].map(([k,l]) => (
-                    <Field key={k} label={l} value={form.perimetros[k]} onChange={setN("perimetros",k)} type="number" placeholder="—" />
-                  ))}
                 </div>
               </div>
             )}
@@ -1447,7 +1486,7 @@ Tono profesional, directo. Incluye gramaje exacto en todo.`;
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
                 <div>
                   <div style={{ fontSize: 8, color: C.gray, letterSpacing: "1.5px", fontWeight: 700 }}>ANÁLISIS CORPORAL</div>
-                  <div style={{ fontSize: 9, color: C.inkSoft, marginTop: 2, fontWeight: 600 }}>Jackson-Pollock + Siri (grasa) · Lee 2000 (músculo)</div>
+                  <div style={{ fontSize: 9, color: C.inkSoft, marginTop: 2, fontWeight: 600 }}>Durnin & Womersley (grasa) · Lee 2000 (músculo)</div>
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontSize: 7, color: C.gray, fontWeight: 700 }}>CLASIF.</div>
@@ -1516,6 +1555,21 @@ Tono profesional, directo. Incluye gramaje exacto en todo.`;
                     );
                   })}
                 </div>
+                {comp.sumaPliegues && (comp.sumaPliegues.sum6 !== null || comp.sumaPliegues.sum8 !== null) && (
+                  <div style={{ borderTop: `1px solid ${C.grayLt}`, marginTop: 10, paddingTop: 10 }}>
+                    <div style={{ fontSize: 7, color: C.gray, fontWeight: 700, letterSpacing: "0.5px", marginBottom: 6 }}>SUMATORIA DE PLIEGUES</div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <div>
+                        <div style={{ fontSize: 7, color: C.grayLt, fontWeight: 700 }}>6 PLIEGUES</div>
+                        <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 900, fontSize: 15, color: C.ink }}>{comp.sumaPliegues.sum6 !== null ? `${comp.sumaPliegues.sum6.toFixed(1)}mm` : "—"}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 7, color: C.grayLt, fontWeight: 700 }}>8 PLIEGUES</div>
+                        <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 900, fontSize: 15, color: C.ink }}>{comp.sumaPliegues.sum8 !== null ? `${comp.sumaPliegues.sum8.toFixed(1)}mm` : "—"}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
